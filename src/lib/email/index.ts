@@ -1,7 +1,7 @@
 import { Resend } from 'resend'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
-const FROM = 'GolfDraw <akshatkumarsingh047@gmail.com>'
+const FROM = 'GolfDraw <onboarding@resend.dev>'
 
 interface EmailOptions {
   to: string
