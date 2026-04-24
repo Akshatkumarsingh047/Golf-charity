@@ -4,6 +4,6 @@
   "devCommand": "next dev",
   "installCommand": "npm install",
   "regions": [
-    "Ind"
+    "dub1"
   ]
 }
