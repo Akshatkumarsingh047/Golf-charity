@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const PUBLIC_PAGES = [
+const PUBLIC_PATHS = [
   '/',
   '/charities',
   '/how-it-works',
@@ -9,29 +9,31 @@ const PUBLIC_PAGES = [
   '/auth/login',
   '/auth/signup',
   '/auth/callback',
+  '/admin-login',
 ]
 
-const AUTH_ONLY_PAGES = [
+const AUTH_ONLY_PATHS = [
   '/dashboard/billing',
   '/dashboard/profile',
 ]
 
-function isPublicPage(p: string) {
-  return PUBLIC_PAGES.some(x => p === x || p.startsWith(x + '/'))
+function isPublic(p: string) {
+  return PUBLIC_PATHS.some(x => p === x || p.startsWith(x + '/'))
 }
 
-function isAuthOnlyPage(p: string) {
-  return AUTH_ONLY_PAGES.some(x => p === x || p.startsWith(x + '/'))
+function isAuthOnly(p: string) {
+  return AUTH_ONLY_PATHS.some(x => p === x || p.startsWith(x + '/'))
 }
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname
 
-  // ── 1. All /api/* routes handle their own auth internally
-  if (pathname.startsWith('/api/')) {
-    return NextResponse.next()
-  }
+  // ── Skip middleware entirely for these — no auth calls at all ──────────────
+  if (pathname.startsWith('/api/')) return NextResponse.next()
+  if (pathname === '/admin-login')  return NextResponse.next()
+  if (isPublic(pathname))           return NextResponse.next()
 
+  // ── Set up Supabase SSR client (needed to refresh cookies) ───────────────
   let response = NextResponse.next({ request: { headers: request.headers } })
 
   const supabase = createServerClient(
@@ -39,7 +41,7 @@ export async function middleware(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) { return request.cookies.get(name)?.value },
+        get(name: string)                        { return request.cookies.get(name)?.value },
         set(name: string, value: string, options: CookieOptions) {
           request.cookies.set({ name, value, ...options })
           response = NextResponse.next({ request: { headers: request.headers } })
@@ -54,55 +56,51 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Required by @supabase/ssr to refresh cookies
-  await supabase.auth.getSession()
-  // Secure auth check
-  const { data: { user } } = await supabase.auth.getUser()
+  // ── Single auth call — getSession() refreshes cookie, low rate-limit cost ─
+  // We use getSession here (not getUser) to minimise server round-trips.
+  // getUser() (network call to Supabase) only happens in API routes/pages
+  // where we need to verify the JWT cryptographically.
+  const { data: { session } } = await supabase.auth.getSession()
 
-  // ── 2. Admin pages — only admins allowed
-  if (pathname.startsWith('/admin')) {
-    if (!user) {
-      return NextResponse.redirect(new URL('/auth/login?next=/admin', request.url))
+  // ── Not logged in ─────────────────────────────────────────────────────────
+  if (!session) {
+    // Admin routes → admin login
+    if (pathname.startsWith('/admin')) {
+      return NextResponse.redirect(new URL('/admin-login', request.url))
     }
-    const { data: dbUser } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-    if (!dbUser || (dbUser as any).role !== 'admin') {
-      return new NextResponse('Forbidden', { status: 403 })
-    }
-    return response
-  }
-
-  // ── 3. Public pages — always allow
-  if (isPublicPage(pathname)) return response
-
-  // ── 4. Not logged in
-  if (!user) {
+    // All other protected routes → user login
     return NextResponse.redirect(
       new URL('/auth/login?next=' + encodeURIComponent(pathname), request.url)
     )
   }
 
-  // ── 5. Fetch role + subscription in one query
+  // ── Logged in — check role from DB (single query, cached by Supabase) ─────
   const { data: dbUser } = await supabase
     .from('users')
     .select('role, subscription_status, subscription_end')
-    .eq('id', user.id)
+    .eq('id', session.user.id)
     .single()
 
-  const isAdmin = (dbUser as any)?.role === 'admin'
+  const role     = (dbUser as any)?.role ?? 'user'
+  const isAdmin  = role === 'admin'
 
-  // ── 6. Admin users are NEVER allowed on /dashboard/* — redirect to /admin
+  // ── Admin routes: require admin role ─────────────────────────────────────
+  if (pathname.startsWith('/admin')) {
+    if (!isAdmin) {
+      return NextResponse.redirect(new URL('/admin-login?error=forbidden', request.url))
+    }
+    return response
+  }
+
+  // ── Admin user visiting /dashboard → send to /admin ──────────────────────
   if (isAdmin && pathname.startsWith('/dashboard')) {
     return NextResponse.redirect(new URL('/admin', request.url))
   }
 
-  // ── 7. Auth-only pages (billing, profile) — no subscription check
-  if (isAuthOnlyPage(pathname)) return response
+  // ── Auth-only pages (billing, profile) — skip subscription check ──────────
+  if (isAuthOnly(pathname)) return response
 
-  // ── 8. All other pages require active subscription
+  // ── All other pages — require active subscription ─────────────────────────
   const isActive =
     dbUser?.subscription_status === 'active' &&
     dbUser?.subscription_end &&
