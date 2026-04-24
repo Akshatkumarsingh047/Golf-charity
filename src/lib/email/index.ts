@@ -64,7 +64,7 @@ export const emailTemplates = {
 
   paymentFailed: (name: string) => base(`
     <h1 style="color:#ff5e5e;font-size:24px;margin:0 0 8px">Payment Failed</h1>
-    <p style="color:#e8e8f0;font-weight:600;margin-bottom:8px">Hi ${name},</p>
+    <p style="color:#e8e8f0;font-weight:600;margin-bottom:8px"> Hi  ${name},</p>
     <p style="color:#9999b0;line-height:1.6">We couldn't process your latest payment. Please update your payment details to keep your access and draw entries active.</p>
     ${cta(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`, 'Update Payment Details')}
   `),
